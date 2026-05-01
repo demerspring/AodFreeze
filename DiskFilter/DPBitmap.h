@@ -28,12 +28,16 @@ NTSTATUS DPBitmap_Create(
 	ULONG regionBytes	// 位图粒度，分成N块，一块占多少byte
 );
 
-ULONGLONG DPBitmap_FindNext(DP_BITMAP *bitMap, ULONGLONG startIndex, BOOL set);
+ULONGLONG DPBitmap_FindNext(DP_BITMAP *bitMap, ULONGLONG startIndex, BOOLEAN set, ULONGLONG limitCount/* = 0*/);
 
-ULONGLONG DPBitmap_FindPrev(DP_BITMAP *bitMap, ULONGLONG startIndex, BOOL set);
+ULONGLONG DPBitmap_FindPrev(DP_BITMAP *bitMap, ULONGLONG startIndex, BOOLEAN set);
 
-NTSTATUS DPBitmap_Set(DP_BITMAP *bitMap, ULONGLONG index, BOOL set);
+NTSTATUS DPBitmap_Set(DP_BITMAP *bitMap, ULONGLONG index, BOOLEAN set);
 
-BOOL DPBitmap_Test(DP_BITMAP *bitMap, ULONGLONG index);
+BOOLEAN DPBitmap_Test(DP_BITMAP *bitMap, ULONGLONG index);
 
-ULONGLONG DPBitmap_Count(DP_BITMAP *bitMap, BOOL set);
+BOOLEAN DPBitmap_TestRange(DP_BITMAP* bitMap, ULONGLONG startIndex, ULONGLONG count, BOOLEAN set);
+
+NTSTATUS DPBitmap_SetRange(DP_BITMAP* bitMap, ULONGLONG startIndex, ULONGLONG count, BOOLEAN set);
+
+ULONGLONG DPBitmap_Count(DP_BITMAP *bitMap, BOOLEAN set);

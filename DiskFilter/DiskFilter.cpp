@@ -1253,7 +1253,7 @@ out:
 }
 
 // 获取真实需要读取的扇区
-ULONGLONG GetRealSectorForRead(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, PULONGLONG nextCount)
+ULONGLONG GetRealSectorForRead(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, ULONG limitCount, PULONGLONG nextCount)
 {
 	ULONGLONG	mapIndex = orgIndex;
 
@@ -1263,6 +1263,13 @@ ULONGLONG GetRealSectorForRead(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, PULO
 	// 此扇区是否允许直接操作
 	if (IsSectorAllow(volumeInfo, orgIndex))
 	{
+		if (limitCount && nextCount)
+		{
+			ULONGLONG nextIndex = DPBitmap_FindNext(volumeInfo->BitmapAllow, orgIndex + 1, FALSE, limitCount);
+			if (nextIndex == (ULONGLONG)-1)
+				nextIndex = orgIndex + limitCount;
+			*nextCount = nextIndex - orgIndex - 1;
+		}
 		return orgIndex;
 	}
 
@@ -1319,7 +1326,7 @@ void UpdateRedirectRecord(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, ULONGLONG
 }
 
 // 获取真实需要写入的扇区
-ULONGLONG GetRealSectorForWrite(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, PULONGLONG nextCount, PBOOLEAN needRedirect)
+ULONGLONG GetRealSectorForWrite(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, ULONG limitCount, PULONGLONG nextCount, PBOOLEAN needRedirect)
 {
 	ULONGLONG	mapIndex = (ULONGLONG)-1;
 
@@ -1331,6 +1338,13 @@ ULONGLONG GetRealSectorForWrite(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, PUL
 	// 此扇区是否允许直接写
 	if (IsSectorAllow(volumeInfo, orgIndex))
 	{
+		if (limitCount && nextCount)
+		{
+			ULONGLONG nextIndex = DPBitmap_FindNext(volumeInfo->BitmapAllow, orgIndex + 1, FALSE, limitCount);
+			if (nextIndex == (ULONGLONG)-1)
+				nextIndex = orgIndex + limitCount;
+			*nextCount = nextIndex - orgIndex - 1;
+		}
 		return orgIndex;
 	}
 
@@ -1340,6 +1354,15 @@ ULONGLONG GetRealSectorForWrite(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, PUL
 		// 不重定向, 直接标记为可直接写入
 		DPBitmap_Set(volumeInfo->BitmapUsed, orgIndex, TRUE);
 		DPBitmap_Set(volumeInfo->BitmapAllow, orgIndex, TRUE);
+		if (limitCount && nextCount)
+		{
+			ULONGLONG nextIndex = DPBitmap_FindNext(volumeInfo->BitmapUsed, orgIndex + 1, TRUE, limitCount);
+			if (nextIndex == (ULONGLONG)-1)
+				nextIndex = orgIndex + limitCount;
+			*nextCount = nextIndex - orgIndex - 1;
+			DPBitmap_SetRange(volumeInfo->BitmapUsed, orgIndex + 1, *nextCount, TRUE);
+			DPBitmap_SetRange(volumeInfo->BitmapAllow, orgIndex + 1, *nextCount, TRUE);
+		}
 		return orgIndex;
 	}
 
@@ -1352,7 +1375,7 @@ ULONGLONG GetRealSectorForWrite(PVOLUME_INFO volumeInfo, ULONGLONG orgIndex, PUL
 	else
 	{
 		// 查找下一个可用的空闲扇区
-		mapIndex = DPBitmap_FindNext(volumeInfo->BitmapUsed, volumeInfo->LastScanIndex, FALSE);
+		mapIndex = DPBitmap_FindNext(volumeInfo->BitmapUsed, volumeInfo->LastScanIndex, FALSE, 0);
 
 		if (mapIndex != -1)
 		{
@@ -1412,11 +1435,11 @@ NTSTATUS HandleDiskRequest(
 
 		if (IRP_MJ_READ == majorFunction)
 		{
-			realIndex = GetRealSectorForRead(volumeInfo, sectorIndex, &curCount);
+			realIndex = GetRealSectorForRead(volumeInfo, sectorIndex, length / bytesPerSector, &curCount);
 		}
 		else
 		{
-			realIndex = GetRealSectorForWrite(volumeInfo, sectorIndex, &curCount, &needRedirect);
+			realIndex = GetRealSectorForWrite(volumeInfo, sectorIndex, length / bytesPerSector, &curCount, &needRedirect);
 		}
 
 		if (-1 == realIndex)
@@ -1547,7 +1570,7 @@ ULONGLONG GetRealSectorForDirectWrite(PVOLUME_INFO volumeInfo, ULONGLONG orgInde
 			*nextCount = 0;
 
 		// 查找下一个可用的空闲扇区
-		mapIndex = DPBitmap_FindNext(volumeInfo->BitmapUsed, volumeInfo->LastScanIndex, FALSE);
+		mapIndex = DPBitmap_FindNext(volumeInfo->BitmapUsed, volumeInfo->LastScanIndex, FALSE, 0);
 
 		if (mapIndex != -1)
 		{
@@ -1571,7 +1594,7 @@ ULONGLONG GetRealSectorForDirectWrite(PVOLUME_INFO volumeInfo, ULONGLONG orgInde
 	{
 redirect:
 		BOOLEAN needModify = FALSE;
-		mapIndex = GetRealSectorForWrite(volumeInfo, orgIndex, NULL, &needModify);
+		mapIndex = GetRealSectorForWrite(volumeInfo, orgIndex, 0, NULL, &needModify);
 		if (needModify)
 		{
 			*modifyType = 3; // 向重定向表中添加一条orgIndex到mapIndex的记录
@@ -2312,8 +2335,6 @@ OnDiskFilterReadWrite(
 	// 保护硬盘上的特定扇区（MBR和GPT分区表,保留扇区,EBR）
 	if (IRP_MJ_WRITE == irpStack->MajorFunction && DeviceNumber < sizeof(ProtectDiskList) / sizeof(*ProtectDiskList) && ProtectDiskList[DeviceNumber].BitmapDeny)
 	{
-		ULONG cacheLength = length;
-		ULONGLONG cacheOffset = offset.QuadPart;
 		ULONG bytesPerSector = ProtectDiskList[DeviceNumber].BytesPerSector;
 		PDP_BITMAP bitmap = ProtectDiskList[DeviceNumber].BitmapDeny;
 		//未对齐读写操作，返回错误不处理
@@ -2324,18 +2345,14 @@ OnDiskFilterReadWrite(
 			LogWarn("Unaligned write to disk %lu, offset %llu length %lu\n", DeviceNumber, offset.QuadPart, length);
 			return TRUE;
 		}
-		while (cacheLength)
+		ULONGLONG cacheOffset = offset.QuadPart / bytesPerSector;
+		ULONG cacheLength = length / bytesPerSector;
+		if (!DPBitmap_TestRange(bitmap, cacheOffset, cacheLength, FALSE))
 		{
-			ULONGLONG sectorIndex = cacheOffset / bytesPerSector;
-			if (DPBitmap_Test(bitmap, sectorIndex))
-			{
-				*Status = Irp->IoStatus.Status = STATUS_ACCESS_DENIED;
-				IoCompleteRequest(Irp, IO_NO_INCREMENT);
-				LogInfo("Denied write sector %llu on disk %d\n", sectorIndex, DeviceNumber);
-				return TRUE;
-			}
-			cacheOffset += bytesPerSector;
-			cacheLength -= bytesPerSector;
+			*Status = Irp->IoStatus.Status = STATUS_ACCESS_DENIED;
+			IoCompleteRequest(Irp, IO_NO_INCREMENT);
+			LogInfo("Denied write sector %llu->%llu on disk %d\n", cacheOffset, cacheOffset + cacheLength - 1, DeviceNumber);
+			return TRUE;
 		}
 	}
 

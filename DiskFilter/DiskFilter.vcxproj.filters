@@ -28,9 +28,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="UsingCPP.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="DPBitmap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -66,9 +63,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="UsingCPP.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="Pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>

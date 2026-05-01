@@ -1307,12 +1307,12 @@ void InitDisplay()
 	// Windows 7以下需要做额外的初始化
 	if (InbvIsBootDriverInstalled())
 	{
-		InbvAcquireDisplayOwnership();
 		InbvResetDisplay();
+		InbvAcquireDisplayOwnership();
+		InbvSetScrollRegion(0, 0, 639, 475);
 		InbvSetTextColor(15);
 		InbvInstallDisplayStringFilter(0);
 		InbvEnableDisplayString(1);
-		InbvSetScrollRegion(0, 0, 639, 475);
 	}
 }
 
