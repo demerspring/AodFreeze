@@ -108,3 +108,4 @@
 
 本项目使用了开源项目 [filedisk](https://www.accum.se/~bosse/)（作者 Bo Brantén）作为虚拟分区的实现，特此致谢。
 
+本项目使用了开源项目 [dlmalloc](https://gee.cs.oswego.edu/pub/misc/malloc.c)（作者 Doug Lea）作为内存管理器，特此致谢。

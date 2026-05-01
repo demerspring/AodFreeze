@@ -107,3 +107,5 @@ Issues and pull requests are welcome!
 This project is modified and enhanced based on [diskflt](https://code.google.com/p/diskflt) (original author dbgger@gmail.com). Although the original project is no longer maintained, its ideas laid the foundation for this project. Special thanks.
 
 This project uses the open-source [filedisk](https://www.accum.se/~bosse/) (author Bo Brantén) for the virtual partition implementation. Special thanks.
+
+This project uses the open-source [dlmalloc](https://gee.cs.oswego.edu/pub/misc/malloc.c) (author Doug Lee) as its memory manager. Special thanks.
