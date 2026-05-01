@@ -11,6 +11,18 @@
 #define new DEBUG_NEW
 #endif
 
+CMap<int, int, CString, CString> _strings;
+
+CString GetLangStr(int id)
+{
+	CString str;
+	if (!_strings.Lookup(id, str))
+	{
+		str.LoadString(id);
+		_strings.SetAt(id, str);
+	}
+	return str;
+}
 
 // CDiskfltBufmonApp
 
@@ -56,7 +68,7 @@ BOOL CDiskfltBufmonApp::InitInstance()
 	// Change the registry key under which our settings are stored
 	// TODO: You should modify this string to be something appropriate
 	// such as the name of your company or organization
-	SetRegistryKey(_T("AodBufmon"));
+	SetRegistryKey(_T("AodFreezeBufmon"));
 
 	CDiskfltBufmonDlg dlg;
 	m_pMainWnd = &dlg;
@@ -74,7 +86,6 @@ BOOL CDiskfltBufmonApp::InitInstance()
 	else if (nResponse == -1)
 	{
 		TRACE(traceAppMsg, 0, "Warning: dialog creation failed, so application is terminating unexpectedly.\n");
-		TRACE(traceAppMsg, 0, "Warning: if you are using MFC controls on the dialog, you cannot #define _AFX_NO_MFC_CONTROLS_IN_DIALOGS.\n");
 	}
 
 #if !defined(_AFXDLL) && !defined(_AFX_NO_MFC_CONTROLS_IN_DIALOGS)

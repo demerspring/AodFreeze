@@ -38,14 +38,13 @@ END_MESSAGE_MAP()
 void CLoginDlg::OnBnClickedOk()
 {
 	// TODO: Add your control notification handler code here
-	WCHAR passWord[256];
-	GetDlgItemText(IDC_PASSWORD, passWord, sizeof(passWord));
+	m_passWord.Empty();
+	GetDlgItemText(IDC_PASSWORD, m_passWord);
 
-	if (0 == lstrlen(passWord))
-	{
+#ifndef ALLOW_EMPTY_PASSWORD
+	if (m_passWord.IsEmpty())
 		return;
-	}
+#endif
 
-	m_passWord = passWord;
 	CDialog::OnOK();
 }

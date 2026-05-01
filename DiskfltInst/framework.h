@@ -28,7 +28,7 @@
 
 #include <afxcontrolbars.h>     // MFC support for ribbons and control bars
 
-
+#define ALLOW_EMPTY_PASSWORD 1
 
 
 

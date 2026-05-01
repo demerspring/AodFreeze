@@ -30,3 +30,8 @@ public:
 };
 
 extern CDiskfltBufmonApp theApp;
+
+extern CString GetLangStr(int id);
+
+#define _LT(x) GetLangStr(IDS_##x)
+#define _LTT(x) (LPCTSTR)GetLangStr(IDS_##x)
