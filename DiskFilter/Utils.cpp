@@ -825,7 +825,8 @@ NT Status is returned.
 	}
 
 	if (Irp->PendingReturned && (Context != NULL)) {
-		*Irp->UserIosb = Irp->IoStatus;
+		if (Irp->UserIosb)
+			*Irp->UserIosb = Irp->IoStatus;
 		KeSetEvent((PKEVENT)Context, IO_DISK_INCREMENT, FALSE);
 	}
 
@@ -844,6 +845,7 @@ NTSTATUS FastFsdRequest(
 	OUT PVOID Buffer,
 	IN ULONG Length,
 	IN BOOLEAN Wait,
+	OUT PKEVENT Event,
 	IN BOOLEAN ForceWrite
 )
 {
@@ -877,9 +879,7 @@ NTSTATUS FastFsdRequest(
 	if (Wait)
 	{
 		KeInitializeEvent(&event, NotificationEvent, FALSE);
-		IoSetCompletionRoutine(irp, FltReadWriteSectorsCompletion,
-			&event, TRUE, TRUE, TRUE);
-
+		irp->UserEvent = &event;
 		status = IoCallDriver(DeviceObject, irp);
 		if (STATUS_PENDING == status)
 		{
@@ -889,10 +889,51 @@ NTSTATUS FastFsdRequest(
 	}
 	else
 	{
-		IoSetCompletionRoutine(irp, FltReadWriteSectorsCompletion,
-			NULL, TRUE, TRUE, TRUE);
-		irp->UserIosb = NULL;
+		if (Event)
+		{
+			KeInitializeEvent(Event, NotificationEvent, FALSE);
+			irp->UserEvent = Event;
+		}
+		else
+		{
+			irp->UserEvent = NULL;
+		}
+		irp->UserIosb = NULL; 
 		status = IoCallDriver(DeviceObject, irp);
+	}
+
+	return status;
+}
+
+NTSTATUS WaitForBatch(
+	IN ULONG Count,
+	IN PVOID EventArray[])
+{
+	PKWAIT_BLOCK waitBlockArray = NULL;
+	NTSTATUS status;
+
+	if (Count > THREAD_WAIT_OBJECTS)
+	{
+		waitBlockArray = (PKWAIT_BLOCK)__malloc(Count * sizeof(KWAIT_BLOCK));
+		if (waitBlockArray == NULL)
+		{
+			return STATUS_INSUFFICIENT_RESOURCES;
+		}
+	}
+
+	status = KeWaitForMultipleObjects(
+		Count,
+		(PVOID *)EventArray,
+		WaitAll,
+		Executive,
+		KernelMode,
+		FALSE,
+		NULL,
+		waitBlockArray);
+
+	if (waitBlockArray != NULL)
+	{
+		__free(waitBlockArray);
 	}
 
 	return status;

@@ -1428,6 +1428,15 @@ NTSTATUS HandleDiskRequest(
 
 	ULONGLONG	curCount = 0; // 一次性能处理的连续扇区数量
 
+
+	// 批量发送异步 IO，并在达到一定数量再等待，避免不必要的等待
+	#define MAX_BATCH_EVENTS 64
+	KEVENT eventBatch[MAX_BATCH_EVENTS];
+	PVOID eventPtrs[MAX_BATCH_EVENTS];
+	ULONG batchIndex = 0;
+	#define WAIT_BATCH { WaitForBatch(batchIndex, eventPtrs); batchIndex = 0; }
+	#define ADD_BATCH(status) if (NT_SUCCESS(status)) { eventPtrs[batchIndex] = &eventBatch[batchIndex]; batchIndex++; if (batchIndex >= MAX_BATCH_EVENTS) WAIT_BATCH }
+
 	// 判断上次要处理的扇区跟这次要处理的扇区是否连续，连续了就一起处理，否则单独处理, 加快速度
 	while (length)
 	{
@@ -1448,7 +1457,8 @@ NTSTATUS HandleDiskRequest(
 			if (!isFirstBlock)
 			{
 				status = FastFsdRequest(LowerDeviceObject[volumeInfo->DiskNumber], majorFunction, volumeInfo->StartOffset + prevOffset,
-					prevBuffer, totalProcessBytes, TRUE);
+					prevBuffer, totalProcessBytes, FALSE, &eventBatch[batchIndex]);
+				ADD_BATCH(status);
 
 				// 判断是否要加入重定向列表
 				if (prevNeedRedirect)
@@ -1491,7 +1501,8 @@ NTSTATUS HandleDiskRequest(
 		{
 			isFirstBlock = TRUE;
 			status = FastFsdRequest(LowerDeviceObject[volumeInfo->DiskNumber], majorFunction, volumeInfo->StartOffset + prevOffset,
-				prevBuffer, totalProcessBytes, TRUE);
+				prevBuffer, totalProcessBytes, FALSE, &eventBatch[batchIndex]);
+			ADD_BATCH(status);
 
 			// 判断是否要加入重定向列表
 			if (prevNeedRedirect)
@@ -1507,7 +1518,8 @@ NTSTATUS HandleDiskRequest(
 		if (bytesPerSector * curCount >= length)
 		{
 			status = FastFsdRequest(LowerDeviceObject[volumeInfo->DiskNumber], majorFunction, volumeInfo->StartOffset + prevOffset,
-				prevBuffer, totalProcessBytes, TRUE);
+				prevBuffer, totalProcessBytes, FALSE, &eventBatch[batchIndex]);
+			ADD_BATCH(status);
 
 			// 判断是否要加入重定向列表
 			if (prevNeedRedirect)
@@ -1524,8 +1536,9 @@ NTSTATUS HandleDiskRequest(
 		buff = (char *)buff + bytesPerSector * curCount;
 		length -= bytesPerSector * (ULONG)curCount;
 	}
-
-	return status;
+	if (batchIndex > 0) WAIT_BATCH
+	#undef WAIT_BATCH
+	return STATUS_SUCCESS;
 }
 
 // 直接写入时获取真实需要写入的备份扇区
@@ -1982,6 +1995,8 @@ void ThreadReadWrite(PVOID Context)
 	PIRP				Irp = NULL;
 	//irp stack指针
 	PIO_STACK_LOCATION	io_stack = NULL;
+	//缓存IRP列表
+	LIST_ENTRY cacheIrpList;
 	//irp中包括的数据地址
 	PVOID				buffer = NULL;
 	//irp中的数据长度
@@ -1992,6 +2007,10 @@ void ThreadReadWrite(PVOID Context)
 	LARGE_INTEGER		cacheOffset = { 0 };
 	//是否停止保护
 	BOOLEAN				StopProtect = FALSE;
+
+	KIRQL oldIrql;
+
+	InitializeListHead(&cacheIrpList);
 
 	//设置这个线程的优先级
 	KeSetPriorityThread(KeGetCurrentThread(), LOW_REALTIME_PRIORITY);
@@ -2023,13 +2042,18 @@ void ThreadReadWrite(PVOID Context)
 			volume_info->CanSaveData = FALSE;
 			KeSetEvent(&volume_info->FinishSaveDataEvent, (KPRIORITY)0, FALSE);
 		}
-		//从请求队列的首部拿出一个请求来准备处理，这里使用了自旋锁机制，所以不会有冲突
-		while ((ReqEntry = ExInterlockedRemoveHeadList(
-			&volume_info->ListHead,
-			&volume_info->ListLock
-		)) != NULL)
+		// 批量取出所有待处理 IRP
+		KeAcquireSpinLock(&volume_info->ListLock, &oldIrql);
+		while (!IsListEmpty(&volume_info->ListHead))
+		{
+			PLIST_ENTRY entry = RemoveHeadList(&volume_info->ListHead);
+			InsertTailList(&cacheIrpList, entry);
+		}
+		KeReleaseSpinLock(&volume_info->ListLock, oldIrql);
+		while (!IsListEmpty(&cacheIrpList))
 		{
 			void * newbuff = NULL, *bufaddr = NULL;
+			ReqEntry = RemoveHeadList(&cacheIrpList);
 
 			//从队列的入口里找到实际的irp的地址
 			Irp = CONTAINING_RECORD(ReqEntry, IRP, Tail.Overlay.ListEntry);
@@ -2136,14 +2160,14 @@ void ThreadReadWrite(PVOID Context)
 						if (IRP_MJ_READ == io_stack->MajorFunction)
 						{
 							status = FastFsdRequest(io_stack->DeviceObject, io_stack->MajorFunction, offset.QuadPart,
-								newbuff, BufferLength, TRUE, FALSE);
+								newbuff, BufferLength, TRUE, NULL, FALSE);
 							RtlCopyMemory(buffer, newbuff, BufferLength);
 						}
 						else
 						{
 							RtlCopyMemory(newbuff, buffer, BufferLength);
 							status = FastFsdRequest(io_stack->DeviceObject, io_stack->MajorFunction, offset.QuadPart,
-								newbuff, BufferLength, TRUE, io_stack->Flags & SL_FORCE_DIRECT_WRITE);
+								newbuff, BufferLength, TRUE, NULL, io_stack->Flags & SL_FORCE_DIRECT_WRITE);
 						}
 						offset.QuadPart += BufferLength;
 						buffer = (PUCHAR)buffer + BufferLength;
@@ -2175,14 +2199,14 @@ void ThreadReadWrite(PVOID Context)
 						if (IRP_MJ_READ == io_stack->MajorFunction)
 						{
 							status = FastFsdRequest(io_stack->DeviceObject, io_stack->MajorFunction, NewOffset,
-								(PUCHAR)newbuff + BufferOffset, NewLength, TRUE, FALSE);
+								(PUCHAR)newbuff + BufferOffset, NewLength, TRUE, NULL, FALSE);
 							RtlCopyMemory((PUCHAR)buffer + BufferOffset, (PUCHAR)newbuff + BufferOffset, NewLength);
 						}
 						else
 						{
 							RtlCopyMemory((PUCHAR)newbuff + BufferOffset, (PUCHAR)buffer + BufferOffset, NewLength);
 							status = FastFsdRequest(io_stack->DeviceObject, io_stack->MajorFunction, NewOffset,
-								(PUCHAR)newbuff + BufferOffset, NewLength, TRUE, io_stack->Flags & SL_FORCE_DIRECT_WRITE);
+								(PUCHAR)newbuff + BufferOffset, NewLength, TRUE, NULL, io_stack->Flags & SL_FORCE_DIRECT_WRITE);
 						}
 					}
 				}
@@ -2254,6 +2278,9 @@ OnDiskFilterReadWrite(
 	//irp要处理的偏移量
 	LARGE_INTEGER		offset = { 0 };
 
+	KIRQL oldIrql;
+	BOOLEAN wasEmpty;
+
 	if (!IsProtect)
 	{
 		return FALSE;
@@ -2293,43 +2320,27 @@ OnDiskFilterReadWrite(
 				LogWarn("Unaligned read/write to disk %lu, offset %llu length %lu\n", DeviceNumber, offset.QuadPart, length);
 				return TRUE;
 			}
-			/*//读写操作不被分区完整包含，返回错误不处理
-			if (offset.QuadPart - ProtectVolumeList[i].StartOffset + length > ProtectVolumeList[i].BytesTotal)
-			{
-				*Status = Irp->IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
-				IoCompleteRequest(Irp, IO_NO_INCREMENT);
-				LogWarn("Outbound read/write to disk %lu partition %lu, offset %llu length %lu\n", DeviceNumber, ProtectVolumeList[i].PartitionNumber, offset.QuadPart, length);
-				return TRUE;
-			}*/
 			//这个卷在保护状态，
 			//我们首先把这个irp设为pending状态
 			IoMarkIrpPending(Irp);
 
-			//然后将这个irp放进相应的请求队列里
-			ExInterlockedInsertTailList(
-				&ProtectVolumeList[i].ListHead,
-				&Irp->Tail.Overlay.ListEntry,
-				&ProtectVolumeList[i].ListLock
-			);
-			//设置队列的等待事件，通知队列对这个irp进行处理
-			KeSetEvent(
-				&ProtectVolumeList[i].RequestEvent,
-				(KPRIORITY)0,
-				FALSE);
+			KeAcquireSpinLock(&ProtectVolumeList[i].ListLock, &oldIrql);
+			wasEmpty = IsListEmpty(&ProtectVolumeList[i].ListHead);
+			InsertTailList(&ProtectVolumeList[i].ListHead, &Irp->Tail.Overlay.ListEntry);//然后将这个irp放进相应的请求队列里
+			KeReleaseSpinLock(&ProtectVolumeList[i].ListLock, oldIrql);
+
+			if (wasEmpty)
+			{
+				// 只在队列从空变为非空时才设置队列的等待事件，通知队列对这个irp进行处理
+				KeSetEvent(&ProtectVolumeList[i].RequestEvent, (KPRIORITY)0, FALSE);
+			}
+
 			//返回pending状态，这个irp就算处理完了
 			*Status = STATUS_PENDING;
 
 			// TRUE表始IPR被拦截
 			return TRUE;
 		}
-		/*//读写操作不被分区完整包含，返回错误不处理
-		if (offset.QuadPart < ProtectVolumeList[i].StartOffset && (offset.QuadPart + length) > ProtectVolumeList[i].StartOffset)
-		{
-			*Status = Irp->IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
-			IoCompleteRequest(Irp, IO_NO_INCREMENT);
-			LogWarn("Outbound read/write to disk %lu partition %lu, offset %llu length %lu\n", DeviceNumber, ProtectVolumeList[i].PartitionNumber, offset.QuadPart, length);
-			return TRUE;
-		}*/
 	}
 
 	// 保护硬盘上的特定扇区（MBR和GPT分区表,保留扇区,EBR）
